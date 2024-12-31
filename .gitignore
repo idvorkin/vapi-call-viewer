@@ -71,3 +71,4 @@ Thumbs.db
 # Project specific
 temp/
 cache/ 
+.aider*

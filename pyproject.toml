@@ -37,7 +37,7 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["calls"]
+py-modules = ["calls", "cache", "models"]
 
 [project.scripts]
 calls = "calls:app"
