@@ -11,6 +11,14 @@ A TUI (Text User Interface) application for managing and viewing call transcript
 - Phone number formatting
 - UTC to local time conversion
 
+## Demo Video
+
+[![Building a VAPI TUI to debug a 10$ API call](https://img.youtube.com/vi/hE-qimUbKdg/0.jpg)](https://www.youtube.com/watch?v=hE-qimUbKdg)
+
+Watch a demonstration of the VAPI TUI application in action. This video shows how to use the interface to debug and analyze API calls.
+
+Duration: 1:59
+
 ## Installation
 
 ### Using uv (Recommended)
