@@ -44,6 +44,15 @@ def parse_call(call) -> Call:
         cost = cost.get("total", 0.0)
 
     cost_breakdown = call.get("costBreakdown", {})
+    ended_reason = call.get("endedReason", "")
+    if ended_reason == "customer-ended-call":
+        ended_reason = "Customer Ended"
+    elif ended_reason == "assistant-ended-call":
+        ended_reason = "Assistant Ended"
+    elif ended_reason == "system-ended-call":
+        ended_reason = "System Ended"
+    elif ended_reason == "error":
+        ended_reason = "Error"
 
     return Call(
         id=call["id"],
@@ -54,6 +63,7 @@ def parse_call(call) -> Call:
         Summary=summary,
         Cost=cost,
         CostBreakdown=cost_breakdown,
+        EndedReason=ended_reason,
     )
 
 
@@ -151,6 +161,7 @@ class SortScreen(ModalScreen):
         ("t", "sort('time')", "Sort by Time"),
         ("l", "sort('length')", "Sort by Length"),
         ("c", "sort('cost')", "Sort by Cost"),
+        ("e", "sort('ended')", "Sort by Ended Reason"),
         ("r", "toggle_reverse", "Toggle Reverse Sort"),
     ]
 
@@ -170,7 +181,8 @@ class SortScreen(ModalScreen):
 
     #sort-grid {
         layout: grid;
-        grid-size: 2 2;
+        grid-size: 2;
+        grid-rows: 2;
         grid-gutter: 1 2;
         padding: 1;
         content-align: center middle;
@@ -221,6 +233,7 @@ class SortScreen(ModalScreen):
                 yield Button("[T]ime", id="time", variant="primary")
                 yield Button("[L]ength", id="length")
                 yield Button("[C]ost", id="cost")
+                yield Button("[E]nded", id="ended")
             yield Label("Press 'R' to toggle sort direction", id="reverse-label")
             yield Label("Sort: Descending", id="reverse-status")
 
@@ -237,7 +250,12 @@ class SortScreen(ModalScreen):
         app = self.app
         if isinstance(app, CallBrowserApp):
             # Convert button ID to column name
-            column_map = {"time": "time", "length": "length", "cost": "cost"}
+            column_map = {
+                "time": "time",
+                "length": "length",
+                "cost": "cost",
+                "ended": "ended",
+            }
             app.sort_calls(column_map[column], not self.reverse_sort)
 
         # Reset reverse sort status and dismiss
@@ -575,6 +593,7 @@ class CallDetailsView(Static):
 [#e0af68]Length:[/] {length_str}
 [#9ece6a]Cost:[/] ${call.Cost:.2f}
 [#bb9af7]Caller:[/] {format_phone_number(call.Caller)}
+[#f7768e]Ended:[/] {call.EndedReason or "Unknown"}
 
 {call.Summary}"""
         self.update(details_text)
@@ -593,6 +612,7 @@ class CallTable(DataTable):
         self.add_column("Time")
         self.add_column("Length")
         self.add_column("Cost")
+        self.add_column("Ended")
 
     def load_calls(self, calls: List[Call]):
         """Load calls into the table"""
@@ -603,7 +623,13 @@ class CallTable(DataTable):
             minutes = int(length_seconds // 60)
             seconds = int(length_seconds % 60)
             length = f"{minutes}:{seconds:02d}"
-            self.add_row(start, length, f"${call.Cost:.2f}", key=call.id)
+            self.add_row(
+                start,
+                length,
+                f"${call.Cost:.2f}",
+                call.EndedReason or "Unknown",
+                key=call.id,
+            )
 
     def sort_calls(self, calls: List[Call], column: str, reverse: bool = False):
         """Sort calls by the specified column"""
@@ -613,6 +639,8 @@ class CallTable(DataTable):
             calls.sort(key=lambda x: x.length_in_seconds(), reverse=reverse)
         elif column == "cost":
             calls.sort(key=lambda x: x.Cost, reverse=reverse)
+        elif column == "ended":
+            calls.sort(key=lambda x: x.EndedReason or "", reverse=reverse)
         self.load_calls(calls)
 
 

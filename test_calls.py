@@ -25,6 +25,7 @@ def sample_call():
         End=datetime(2024, 1, 15, 14, 35, tzinfo=tz.tzutc()),
         Cost=1.23,
         CostBreakdown={"transcription": 0.5, "analysis": 0.73},
+        EndedReason="COMPLETED",
     )
 
 
@@ -48,6 +49,7 @@ def long_transcript_call():
         End=datetime(2024, 1, 15, 14, 35, tzinfo=tz.tzutc()),
         Cost=1.23,
         CostBreakdown={"transcription": 0.5, "analysis": 0.73},
+        EndedReason="COMPLETED",
     )
 
 
@@ -73,6 +75,7 @@ def test_parse_call():
         "analysis": {"summary": "Sample summary"},
         "cost": 1.23,
         "costBreakdown": {"transcription": 0.5, "analysis": 0.73},
+        "endedReason": "COMPLETED",
     }
 
     call = parse_call(sample_call)
@@ -83,6 +86,7 @@ def test_parse_call():
     assert call.Transcript == "Sample transcript"
     assert call.Summary == "Sample summary"
     assert call.Cost == 1.23
+    assert call.EndedReason == "COMPLETED"
     assert isinstance(call.Start, datetime)
     assert isinstance(call.End, datetime)
     assert call.Start.tzinfo is not None  # Should be timezone-aware

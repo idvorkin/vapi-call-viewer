@@ -11,36 +11,31 @@ CACHE_DB = os.path.join(tempfile.gettempdir(), "vapi_calls.db")
 logger.debug(f"Cache database location: {CACHE_DB}")
 
 
-def init_db():
-    """Initialize the cache database with proper error handling"""
-    logger.debug("Initializing cache database")
+def init_db() -> bool:
+    """Initialize the SQLite database and create the calls table if it doesn't exist"""
     try:
         conn = sqlite3.connect(CACHE_DB)
         c = conn.cursor()
-
-        # Check if table exists
         c.execute(
-            """SELECT name FROM sqlite_master WHERE type='table' AND name='calls' """
+            """CREATE TABLE IF NOT EXISTS calls
+               (id TEXT PRIMARY KEY,
+                caller TEXT,
+                transcript TEXT,
+                summary TEXT,
+                start TEXT,
+                end TEXT,
+                cost REAL,
+                cost_breakdown TEXT,
+                ended_reason TEXT,
+                cached_at TEXT)"""
         )
-        if not c.fetchone():
-            c.execute("""CREATE TABLE calls
-                     (id TEXT PRIMARY KEY, 
-                      caller TEXT,
-                      transcript TEXT,
-                      summary TEXT,
-                      start TEXT,
-                      end TEXT,
-                      cost REAL,
-                      cost_breakdown TEXT,
-                      cached_at TEXT)""")
-            conn.commit()
-            logger.debug("Created calls table")
-
+        conn.commit()
         conn.close()
-        logger.debug("Cache database initialized")
         return True
     except sqlite3.Error as e:
         logger.error(f"Error initializing database: {e}")
+        if conn:
+            conn.close()
         return False
 
 
@@ -71,6 +66,7 @@ def get_latest_cached_call() -> Optional[Call]:
         End=datetime.fromisoformat(row[5]),
         Cost=row[6],
         CostBreakdown=json.loads(row[7]),
+        EndedReason=row[8] if len(row) > 8 else "",
     )
     logger.debug(f"Found latest cached call: {call.id} from {call.Start}")
     return call
@@ -97,7 +93,7 @@ def cache_calls(calls: List[Call], cache_time: Optional[datetime] = None):
 
         for call in calls:
             c.execute(
-                """INSERT OR REPLACE INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT OR REPLACE INTO calls VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     call.id,
                     call.Caller,
@@ -107,6 +103,7 @@ def cache_calls(calls: List[Call], cache_time: Optional[datetime] = None):
                     call.End.isoformat(),
                     call.Cost,
                     json.dumps(call.CostBreakdown),
+                    call.EndedReason,
                     cache_time.isoformat(),
                 ),
             )
@@ -164,6 +161,7 @@ def get_cached_calls(max_age_minutes: int = 1440) -> Optional[List[Call]]:
             End=datetime.fromisoformat(row[5]),
             Cost=row[6],
             CostBreakdown=json.loads(row[7]),
+            EndedReason=row[8] if len(row) > 8 else "",
         )
         for row in rows
     ]
