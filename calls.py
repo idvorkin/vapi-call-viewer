@@ -304,7 +304,7 @@ class HelpScreen(ModalScreen):
                 yield Label("? - Show help", classes="command")
                 yield Label("j - Move down", classes="command")
                 yield Label("k - Move up", classes="command")
-                yield Label("e - Edit JSON", classes="command")
+                yield Label("v - Edit JSON", classes="command")
                 yield Label("s - Sort", classes="command")
                 yield Label("q - Quit", classes="command")
 
@@ -628,7 +628,7 @@ class CallBrowserApp(App):
         Binding("tab", "focus_next", "Next Widget"),
         Binding("shift+tab", "focus_previous", "Previous Widget"),
         Binding("?", "help", "Help"),
-        Binding("e", "edit_json", "Edit JSON"),
+        Binding("v", "edit_json", "Edit JSON"),
         Binding("s", "sort", "Sort"),
         Binding("enter", "focus_next", "Next Widget"),
     ]

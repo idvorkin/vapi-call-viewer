@@ -763,3 +763,27 @@ async def test_combined_guid_and_id_masking():
 
         # Verify non-matching fields are unchanged
         assert masked_data["normalField"] == "normal-value"
+
+
+@pytest.mark.asyncio
+async def test_view_json_keybinding(sample_call):
+    """Test that 'v' key opens the edit screen."""
+    app = CallBrowserApp()
+    app.calls = [sample_call]  # Use sample call for testing
+
+    async with app.run_test() as pilot:
+        # Press 'v' to open edit screen
+        await pilot.press("v")
+        await pilot.pause()
+
+        # Verify edit screen is shown
+        edit_screen = app.query_one(EditScreen)
+        assert edit_screen is not None
+
+        # Press 'q' to dismiss
+        await pilot.press("q")
+        await pilot.pause()
+
+        # Verify edit screen is dismissed
+        edit_screen = app.query(EditScreen)
+        assert len(edit_screen) == 0

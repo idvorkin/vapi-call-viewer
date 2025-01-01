@@ -41,6 +41,7 @@ calls
 - `h`: Show help screen
 - Arrow keys: Navigate through calls
 - Enter: View call details
+- `v`: View JSON and edit options
 
 ## Development
 
