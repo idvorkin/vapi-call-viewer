@@ -172,7 +172,7 @@ class SortScreen(ModalScreen):
     }
 
     #sort-container {
-        width: 60;
+        width: 35;
         height: auto;
         background: #24283b;
         border: tall #414868;
@@ -181,18 +181,22 @@ class SortScreen(ModalScreen):
 
     #sort-grid {
         layout: grid;
-        grid-size: 2;
-        grid-rows: 2;
-        grid-gutter: 1 2;
-        padding: 1;
+        grid-size: 1;
+        grid-rows: 4;
+        grid-gutter: 0;
+        padding: 0;
         content-align: center middle;
     }
     
     Button {
         width: 100%;
+        height: 1;
+        margin: 0;
         background: #1a1b26;
         color: #c0caf5;
-        border: solid #414868;
+        border: none;
+        content-align: center middle;
+        text-align: center;
     }
 
     Button:hover {
@@ -203,17 +207,20 @@ class SortScreen(ModalScreen):
     Label {
         content-align: center middle;
         width: 100%;
-        padding: 1;
+        padding: 0;
         color: #c0caf5;
+        text-align: center;
     }
 
     #sort-label {
         color: #7aa2f7;
         text-style: bold;
+        padding-bottom: 1;
     }
 
     #reverse-label {
         color: #e0af68;
+        padding-top: 1;
     }
 
     #reverse-status {
@@ -346,7 +353,7 @@ class EditScreen(ModalScreen):
     }
 
     #edit-container {
-        width: 40;
+        width: 35;
         height: auto;
         background: #24283b;
         border: tall #414868;
@@ -357,20 +364,19 @@ class EditScreen(ModalScreen):
         layout: grid;
         grid-size: 1;
         grid-rows: 5;
-        grid-gutter: 1;
-        padding: 1;
+        grid-gutter: 0;
+        padding: 0;
         content-align: center middle;
         height: auto;
-        min-height: 20;
     }
     
     Button {
         width: 100%;
-        height: 3;
-        margin-bottom: 1;
+        height: 1;
+        margin: 0;
         background: #1a1b26;
         color: #c0caf5;
-        border: solid #414868;
+        border: none;
         content-align: center middle;
         text-align: center;
     }
@@ -383,7 +389,7 @@ class EditScreen(ModalScreen):
     Label {
         content-align: center middle;
         width: 100%;
-        padding: 1;
+        padding: 0;
         color: #c0caf5;
         text-align: center;
     }
@@ -391,12 +397,13 @@ class EditScreen(ModalScreen):
     #edit-label {
         color: #7aa2f7;
         text-style: bold;
+        padding-bottom: 1;
     }
 
     #mask-status {
         color: #9ece6a;
         text-style: bold;
-        margin-bottom: 1;
+        padding-bottom: 1;
     }
     """
 
@@ -912,6 +919,12 @@ class CallBrowserApp(App):
                 self.action_move_up()
             else:
                 self.action_move_down()
+        elif self.focused == self.call_table and event.key in ("h", "l"):
+            event.prevent_default()  # Stop h/l from being handled by other widgets
+            if event.key == "h":
+                self.call_table.scroll_left()
+            else:
+                self.call_table.scroll_right()
 
 
 @app.command()

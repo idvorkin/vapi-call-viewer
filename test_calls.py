@@ -8,6 +8,7 @@ from calls import (
     CallBrowserApp,
     HelpScreen,
     EditScreen,
+    SortScreen,
 )
 from textual.widgets import Label
 import json
@@ -791,3 +792,108 @@ async def test_view_json_keybinding(sample_call):
         # Verify edit screen is dismissed
         edit_screen = app.query(EditScreen)
         assert len(edit_screen) == 0
+
+
+@pytest.mark.asyncio
+async def test_horizontal_scrolling():
+    """Test that h/l keys scroll the calls table horizontally"""
+    app = CallBrowserApp()
+    # Create a call with long values to ensure table is scrollable
+    call = Call(
+        id="test-id-1",
+        Caller="1234567890",
+        Transcript="Test transcript",
+        Summary="Test summary",
+        Start=datetime(2024, 1, 15, 14, 30, tzinfo=tz.tzutc()),
+        End=datetime(2024, 1, 15, 14, 35, tzinfo=tz.tzutc()),
+        Cost=1234567.89,  # Long cost to ensure table needs scrolling
+        CostBreakdown={"transcription": 0.5, "analysis": 0.73},
+        EndedReason="This is a very long ended reason that will require horizontal scrolling",
+    )
+    app.calls = [call]
+
+    async with app.run_test() as pilot:
+        # Get initial scroll position
+        initial_scroll = app.call_table.scroll_x
+
+        # Press 'l' to scroll right
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.call_table.scroll_x > initial_scroll, "Table should scroll right"
+
+        # Press 'h' to scroll left
+        await pilot.press("h")
+        await pilot.pause()
+        assert (
+            app.call_table.scroll_x == initial_scroll
+        ), "Table should scroll back to initial position"
+
+
+@pytest.mark.asyncio
+async def test_horizontal_scrolling_only_in_table():
+    """Test that h/l keys only scroll when table is focused"""
+    app = CallBrowserApp()
+    call = Call(
+        id="test-id-1",
+        Caller="1234567890",
+        Transcript="Test transcript",
+        Summary="Test summary",
+        Start=datetime(2024, 1, 15, 14, 30, tzinfo=tz.tzutc()),
+        End=datetime(2024, 1, 15, 14, 35, tzinfo=tz.tzutc()),
+        Cost=1.23,
+        CostBreakdown={"transcription": 0.5, "analysis": 0.73},
+    )
+    app.calls = [call]
+
+    async with app.run_test() as pilot:
+        # Get initial scroll position
+        initial_scroll = app.call_table.scroll_x
+
+        # Move focus to transcript container
+        await pilot.press("tab")
+        await pilot.pause()
+
+        # Press 'l' and 'h' - should not affect table scroll
+        await pilot.press("l")
+        await pilot.pause()
+        assert (
+            app.call_table.scroll_x == initial_scroll
+        ), "Table should not scroll when unfocused"
+
+        await pilot.press("h")
+        await pilot.pause()
+        assert (
+            app.call_table.scroll_x == initial_scroll
+        ), "Table should not scroll when unfocused"
+
+
+@pytest.mark.asyncio
+async def test_horizontal_scrolling_in_sort_screen():
+    """Test that h/l keys don't interfere with sort screen"""
+    app = CallBrowserApp()
+    call = Call(
+        id="test-id-1",
+        Caller="1234567890",
+        Transcript="Test transcript",
+        Summary="Test summary",
+        Start=datetime(2024, 1, 15, 14, 30, tzinfo=tz.tzutc()),
+        End=datetime(2024, 1, 15, 14, 35, tzinfo=tz.tzutc()),
+        Cost=1.23,
+        CostBreakdown={"transcription": 0.5, "analysis": 0.73},
+    )
+    app.calls = [call]
+
+    async with app.run_test() as pilot:
+        # Open sort screen
+        await pilot.press("s")
+        await pilot.pause()
+
+        # Press 'l' - should trigger length sort, not horizontal scroll
+        await pilot.press("l")
+        await pilot.pause()
+
+        # Verify sort screen was dismissed (indicating sort action was triggered)
+        sort_screen = app.query(SortScreen)
+        assert (
+            len(sort_screen) == 0
+        ), "Sort screen should be dismissed after length sort"
