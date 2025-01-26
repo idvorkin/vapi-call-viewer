@@ -1,8 +1,10 @@
 install:
-    uv pip install --editable ".[dev]"
+    uv venv
+    . .venv/bin/activate
+    uv pip install --editable .
 
 global-install: install
-    pipxu install -f . --editable --python $(which python3.12)
+    uv tool install --force --editable --python $(which python3.12) .
 
 test:
     pytest -n auto
