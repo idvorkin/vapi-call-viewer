@@ -118,9 +118,9 @@ def cache_calls(calls: List[Call], cache_time: Optional[datetime] = None):
             conn.close()
 
 
-def get_cached_calls(max_age_minutes: int = 1440) -> Optional[List[Call]]:
-    """Get cached calls if they exist and are not older than max_age_minutes"""
-    logger.debug(f"Retrieving calls from cache with max age {max_age_minutes} minutes")
+def get_cached_calls(max_age_minutes: Optional[int] = None) -> Optional[List[Call]]:
+    """Get cached calls if they exist"""
+    logger.debug("Retrieving calls from cache")
     if not os.path.exists(CACHE_DB):
         logger.debug("Cache database does not exist")
         return None
@@ -131,24 +131,20 @@ def get_cached_calls(max_age_minutes: int = 1440) -> Optional[List[Call]]:
     conn.create_function("DATETIME", 1, lambda x: x)
 
     c = conn.cursor()
-    cutoff_time = (datetime.now() - timedelta(minutes=max_age_minutes)).isoformat()
-    logger.debug(f"Cache cutoff time: {cutoff_time}")
-
-    # Use SQLite's datetime function for proper comparison
+    
+    # Get all calls without age restriction
     c.execute(
         """
         SELECT * FROM calls 
-        WHERE datetime(cached_at) >= datetime(?)
         ORDER BY datetime(cached_at) DESC
-    """,
-        (cutoff_time,),
+    """
     )
 
     rows = c.fetchall()
     conn.close()
 
     if not rows:
-        logger.debug("No valid cached calls found")
+        logger.debug("No cached calls found")
         return None
 
     calls = [

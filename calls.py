@@ -81,15 +81,16 @@ def format_phone_number(phone: str) -> str:
 
 
 def vapi_calls() -> List[Call]:
-    """Get all calls from the last 24 hours, using cache when possible."""
+    """Get all calls, using cache when possible."""
 
     logger.debug("Fetching calls...")
     stats = get_cache_stats()
     logger.debug(f"Current cache stats: {stats}")
+    cached_calls = None
 
     try:
         # Try to get cached calls first
-        cached_calls = get_cached_calls(max_age_minutes=1440)  # 24 hours
+        cached_calls = get_cached_calls()  # No max age limit
         if cached_calls is not None:
             logger.info(f"Found {len(cached_calls)} calls in cache")
 

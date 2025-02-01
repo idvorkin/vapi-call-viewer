@@ -80,6 +80,7 @@ def test_cache_and_retrieve_calls(sample_calls):
 
 
 def test_cache_expiry():
+    """Test that cache now retains old calls (infinite cache)"""
     now = datetime.now()
     old_call = Call(
         id="test789",
@@ -96,14 +97,11 @@ def test_cache_expiry():
     old_cache_time = now - timedelta(hours=25)
     cache_calls([old_call], cache_time=old_cache_time)
 
-    # Should return None for calls older than 24 hours
-    cached_calls_24h = get_cached_calls(max_age_minutes=1440)  # 24 hours
-    assert cached_calls_24h is None, "Expected no calls within 24 hours"
-
-    cached_calls_33h = get_cached_calls(max_age_minutes=2000)  # ~33 hours
-    assert cached_calls_33h is not None, "Expected calls within 33 hours"
-    assert len(cached_calls_33h) == 1
-    assert cached_calls_33h[0].id == "test789"
+    # Should return the old call since we now have infinite cache
+    cached_calls = get_cached_calls()
+    assert cached_calls is not None, "Expected calls to be returned with infinite cache"
+    assert len(cached_calls) == 1, "Expected one call"
+    assert cached_calls[0].id == "test789", "Expected the old call to be returned"
 
     # Create a new call
     new_call = Call(
@@ -118,13 +116,15 @@ def test_cache_expiry():
     )
 
     # Cache the new call with current timestamp
-    cache_calls([new_call])  # Uses current time
+    cache_calls([new_call])
 
-    # Should return only the new call when within 24 hours
-    cached_calls = get_cached_calls(max_age_minutes=1440)
-    assert cached_calls is not None, "Expected new call within 24 hours"
-    assert len(cached_calls) == 1, "Expected only one call within 24 hours"
-    assert cached_calls[0].id == "test790", "Expected only the new call"
+    # Should return both calls since we have infinite cache
+    cached_calls = get_cached_calls()
+    assert cached_calls is not None, "Expected calls to be returned"
+    assert len(cached_calls) == 2, "Expected both old and new calls"
+    call_ids = {call.id for call in cached_calls}
+    assert "test789" in call_ids, "Expected old call to be present"
+    assert "test790" in call_ids, "Expected new call to be present"
 
 
 def test_cache_update():
