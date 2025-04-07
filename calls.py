@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 import httpx
+import threading
 from datetime import datetime, timedelta
 from dateutil import tz
 from typing import List
@@ -14,9 +15,18 @@ from textual.widgets import DataTable, Static, Label, Button
 from textual.containers import Horizontal, Container, Grid, ScrollableContainer
 from textual.binding import Binding
 from textual.screen import ModalScreen
+from textual.message import Message
 from icecream import ic
 from cache import get_cached_calls, cache_calls, get_latest_cached_call, get_cache_stats
 from models import Call
+
+# Configure logger to write to a file instead of stderr
+log_file = os.path.join(tempfile.gettempdir(), "vapi_calls.log")
+logger.remove()  # Remove default handler
+logger.add(log_file, rotation="10 MB", level="DEBUG")  # Add file handler
+
+# Configure icecream for silent operation
+ic.configureOutput(prefix="", outputFunction=lambda *a, **kw: None)
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -80,7 +90,120 @@ def format_phone_number(phone: str) -> str:
         return phone  # Return original if we can't format it
 
 
-def vapi_calls() -> List[Call]:
+class CacheUpdated(Message):
+    """Event emitted when cache is updated by background thread."""
+
+    def __init__(self, calls: List[Call]):
+        self.calls = calls
+        super().__init__()
+
+
+class CacheUpdateManager:
+    """Manages background updates of the cache."""
+
+    def __init__(self, app=None):
+        self.app = app
+        self.updating = False
+        self.thread = None
+        self.last_update = None
+
+    def start_background_update(self):
+        """Start a background thread to check for cache updates."""
+        if self.updating:
+            return False  # Already updating
+
+        self.updating = True
+        self.thread = threading.Thread(target=self._check_and_update_cache)
+        self.thread.daemon = True  # Allow app to exit even if thread is running
+        self.thread.start()
+        return True
+
+    def _check_and_update_cache(self):
+        """Background thread function to check and update cache."""
+        try:
+            logger.debug("Background thread: Checking for new calls...")
+
+            # First get cached calls
+            cached_calls = get_cached_calls()
+            if cached_calls is None:
+                # No cache yet, fetch from API
+                new_calls = self._fetch_all_calls()
+                if new_calls:
+                    cache_calls(new_calls)
+                    logger.info("Background thread: Initial cache created")
+                    self._notify_update(new_calls)
+                return
+
+            # Check if there are new calls
+            try:
+                new_calls_available = self._check_for_new_calls()
+                if new_calls_available:
+                    # Fetch and cache new calls
+                    new_calls = self._fetch_all_calls()
+                    if new_calls:
+                        cache_calls(new_calls)
+                        logger.info(
+                            f"Background thread: Updated cache with {len(new_calls)} calls"
+                        )
+                        self._notify_update(new_calls)
+                else:
+                    logger.debug("Background thread: Cache is already up to date")
+            except Exception as e:
+                logger.error(f"Background thread: Error checking for new calls: {e}")
+
+        except Exception as e:
+            logger.error(f"Background thread: Update error: {e}")
+        finally:
+            self.updating = False
+            self.last_update = datetime.now()
+
+    def _check_for_new_calls(self) -> bool:
+        """Check if there are new calls available in the API."""
+        headers = {
+            "authorization": f"{os.environ['VAPI_API_KEY']}",
+            "createdAtGE": (
+                datetime.now() - timedelta(minutes=10)
+            ).isoformat(),  # Look back 10 minutes
+            "limit": "1",  # Only get the latest call
+        }
+        latest_api_call = httpx.get("https://api.vapi.ai/call", headers=headers).json()
+
+        if not latest_api_call:
+            return False
+
+        latest_api_call = parse_call(latest_api_call[0])
+        latest_cached_call = get_latest_cached_call()
+
+        # Return True if new calls are available
+        return not (latest_cached_call and latest_api_call.id == latest_cached_call.id)
+
+    def _fetch_all_calls(self) -> List[Call]:
+        """Fetch all calls from the API."""
+        headers = {
+            "authorization": f"{os.environ['VAPI_API_KEY']}",
+            "createdAtGE": (
+                datetime.now() - timedelta(days=365)
+            ).isoformat(),  # Get calls from last year
+            "limit": "1000",  # Get up to 1000 calls
+        }
+        response = httpx.get("https://api.vapi.ai/call", headers=headers)
+        response.raise_for_status()
+        calls_data = response.json()
+
+        calls = [parse_call(c) for c in calls_data]
+        return calls
+
+    def _notify_update(self, calls: List[Call]):
+        """Notify the app of updated calls."""
+        if self.app:
+            self.app.post_message(CacheUpdated(calls=calls))
+
+
+# Global cache update manager - used when no app instance is available
+_cache_manager = CacheUpdateManager()
+
+
+def vapi_calls(skip_api_check: bool = False) -> List[Call]:
     """Get all calls, using cache when possible."""
 
     logger.debug("Fetching calls...")
@@ -93,6 +216,15 @@ def vapi_calls() -> List[Call]:
         cached_calls = get_cached_calls()  # No max age limit
         if cached_calls is not None:
             logger.info(f"Found {len(cached_calls)} calls in cache")
+
+            # Skip API check if requested (for fast startup) or if in environment variable
+            if skip_api_check or os.environ.get("SKIP_API_CHECK"):
+                logger.info("Skipping API check (will update in background)")
+                # Start a background thread to check for updates without blocking UI
+                threading.Thread(
+                    target=lambda: _cache_manager.start_background_update(), daemon=True
+                ).start()
+                return cached_calls
 
             try:
                 # Get the latest call from API to check if we need to update cache
@@ -130,7 +262,10 @@ def vapi_calls() -> List[Call]:
         # If no valid cache or new calls exist, fetch all calls from API
         headers = {
             "authorization": f"{os.environ['VAPI_API_KEY']}",
-            "createdAtGE": (datetime.now() - timedelta(days=1)).isoformat(),
+            "createdAtGE": (
+                datetime.now() - timedelta(days=365)
+            ).isoformat(),  # Get calls from last year
+            "limit": "1000",  # Get up to 1000 calls
         }
         response = httpx.get("https://api.vapi.ai/call", headers=headers)
         response.raise_for_status()  # Raise exception for bad status codes
@@ -328,10 +463,11 @@ class HelpScreen(ModalScreen):
             yield Label("Available Commands", id="help-title")
             with Container(id="help-content"):
                 yield Label("? - Show help", classes="command")
-                yield Label("j - Move down", classes="command")
-                yield Label("k - Move up", classes="command")
+                yield Label("j/k - Move up/down", classes="command")
+                yield Label("h/l - Scroll left/right", classes="command")
                 yield Label("v - Edit JSON", classes="command")
                 yield Label("s - Sort", classes="command")
+                yield Label("r - Refresh calls", classes="command")
                 yield Label("q - Quit", classes="command")
 
 
@@ -652,6 +788,32 @@ class CallTable(DataTable):
         self.load_calls(calls)
 
 
+class CacheStatusWidget(Static):
+    """Widget showing cache status and last update time."""
+
+    def __init__(self):
+        super().__init__("Cache: Loading...", id="cache-status")
+        self.last_update = None
+        self.styles.width = "auto"
+        self.styles.min_width = "30"
+        self.markup = True
+
+    def set_status(self, status="up to date", updating=False):
+        """Update the cache status display."""
+        if updating:
+            self.update("[yellow]Cache: updating...[/yellow]")
+        else:
+            time_str = (
+                "(never)"
+                if not self.last_update
+                else self.last_update.strftime("%H:%M:%S")
+            )
+            self.update(
+                f"[green]Cache: {status}[/green] ([blue]updated: {time_str}[/blue])"
+            )
+            self.last_update = datetime.now()
+
+
 class CallBrowserApp(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
@@ -666,7 +828,10 @@ class CallBrowserApp(App):
         Binding("?", "help", "Help"),
         Binding("v", "edit_json", "Edit JSON"),
         Binding("s", "sort", "Sort"),
+        Binding("r", "refresh", "Refresh"),
         Binding("enter", "focus_next", "Next Widget"),
+        Binding("h", "scroll_left", "Scroll Left"),
+        Binding("l", "scroll_right", "Scroll Right"),
     ]
 
     CSS = """
@@ -676,6 +841,35 @@ class CallBrowserApp(App):
 
     .top-container {
         height: 50vh;
+    }
+    
+    .toolbar {
+        dock: top;
+        height: 1;
+        width: 100%;
+        background: #24283b;
+        border-bottom: solid #414868;
+        padding: 0 1;
+    }
+    
+    #refresh-button {
+        border: none;
+        min-width: 15;
+        background: #364a82;
+        color: #c0caf5;
+        height: 1;
+        margin-left: 1;
+    }
+    
+    #refresh-button:hover {
+        background: #7aa2f7;
+        color: #1a1b26;
+    }
+    
+    #cache-status {
+        background: #24283b;
+        color: #c0caf5;
+        height: 1;
     }
 
     #transcript-container {
@@ -740,6 +934,7 @@ class CallBrowserApp(App):
     def on_mount(self) -> None:
         """Called when app is mounted"""
         logger.info(f"App mounted, bindings: {self.BINDINGS}")
+
         # Select first row on load if there are any calls
         if self.calls and len(self.calls) > 0:
             self.call_table.move_cursor(row=0)
@@ -748,15 +943,85 @@ class CallBrowserApp(App):
             # Set initial focus to call table
             self.set_focus(self.call_table)
 
+        # Set up cache status
+        self.cache_status.set_status(f"loaded ({len(self.calls)} calls)")
+
+        # Set up refresh timer for periodic background updates
+        self._setup_refresh_timer()
+
+        # Do a first background refresh a few seconds after loading
+        self.set_timer(3, self.action_refresh)
+
     def __init__(self):
         super().__init__()
-        self.calls = vapi_calls()
+        # Create cache manager for background updates
+        self.cache_manager = CacheUpdateManager(self)
+
+        # Initial load - skip API check for fast startup
+        self.calls = vapi_calls(skip_api_check=True)
         logger.info(f"Loaded {len(self.calls)} calls")
         self.current_call = None
+
+        # Set up periodic background refresh (every 5 minutes)
+        self.refresh_timer = None
+
+    def on_cache_updated(self, event: CacheUpdated):
+        """Handle cache updated event from background thread."""
+        logger.info(f"Received cache update with {len(event.calls)} calls")
+
+        # Remember current position and selection
+        current_row = (
+            self.call_table.cursor_row if hasattr(self, "call_table") else None
+        )
+        current_id = None
+        if current_row is not None and 0 <= current_row < len(self.calls):
+            current_id = self.calls[current_row].id
+
+        # Update calls list with new data
+        self.calls = event.calls
+
+        # Update the table with new data
+        if hasattr(self, "call_table"):
+            self.call_table.load_calls(self.calls)
+
+        # Restore selection if possible
+        if current_id and hasattr(self, "call_table"):
+            for i, call in enumerate(self.calls):
+                if call.id == current_id:
+                    self.call_table.move_cursor(row=i)
+                    self.call_table.action_select_cursor()
+                    self._update_views_for_current_row()
+                    break
+
+        # Update the cache status
+        if hasattr(self, "cache_status"):
+            self.cache_status.set_status(f"updated ({len(self.calls)} calls)")
+
+    def action_refresh(self):
+        """Manually refresh calls data."""
+        if hasattr(self, "cache_status"):
+            self.cache_status.set_status("updating...", updating=True)
+
+        # Start a background update
+        self.cache_manager.start_background_update()
+
+    def _setup_refresh_timer(self):
+        """Set up a periodic refresh timer."""
+        if self.refresh_timer:
+            self.refresh_timer.stop()
+
+        # Check for updates every 5 minutes
+        self.refresh_timer = self.set_interval(300, self.action_refresh)
 
     def compose(self) -> ComposeResult:
         """Create the UI layout"""
         with Container():
+            # Add a toolbar with cache status and refresh button
+            with Horizontal(classes="toolbar"):
+                self.cache_status = CacheStatusWidget()
+                yield self.cache_status
+                yield Button("Refresh [R]", id="refresh-button")
+
             with Horizontal(classes="top-container"):
                 self.call_table = CallTable()
                 self.call_table.load_calls(self.calls)
@@ -769,6 +1034,11 @@ class CallBrowserApp(App):
                 container.can_focus = True
                 self.transcript = TranscriptView()
                 yield self.transcript
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button press."""
+        if event.button.id == "refresh-button":
+            self.action_refresh()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Handle row selection in the data table."""
