@@ -4,7 +4,7 @@ install:
     uv pip install --editable .
 
 global-install: install
-    uv tool install --force --editable --python $(which python3.12) .
+    uv tool install --force --editable .
 
 test:
     pytest -n auto
