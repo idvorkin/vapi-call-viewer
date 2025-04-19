@@ -1,3 +1,17 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "typer",
+#   "httpx",
+#   "loguru",
+#   "textual",
+#   "python-dateutil",
+#   "icecream",
+#   "pydantic"
+# ]
+# ///
+
 #!python3
 
 import os
@@ -101,11 +115,12 @@ class CacheUpdated(Message):
 class CacheUpdateManager:
     """Manages background updates of the cache."""
 
-    def __init__(self, app=None):
+    def __init__(self, app=None, foreground_updates=False):
         self.app = app
         self.updating = False
         self.thread = None
         self.last_update = None
+        self.foreground_updates = foreground_updates
 
     def start_background_update(self):
         """Start a background thread to check for cache updates."""
@@ -113,49 +128,92 @@ class CacheUpdateManager:
             return False  # Already updating
 
         self.updating = True
-        self.thread = threading.Thread(target=self._check_and_update_cache)
-        self.thread.daemon = True  # Allow app to exit even if thread is running
-        self.thread.start()
-        return True
+
+        if self.foreground_updates:
+            # Run update in foreground
+            logger.info("Running cache update in foreground")
+            self._check_and_update_cache()
+            return True
+        else:
+            # Run update in background thread
+            self.thread = threading.Thread(target=self._check_and_update_cache)
+            self.thread.daemon = True  # Allow app to exit even if thread is running
+            self.thread.start()
+            return True
 
     def _check_and_update_cache(self):
         """Background thread function to check and update cache."""
         try:
-            logger.debug("Background thread: Checking for new calls...")
+            log_msg = "Checking for new calls..."
+            if self.foreground_updates:
+                print(log_msg)
+            logger.debug(log_msg)
 
             # First get cached calls
             cached_calls = get_cached_calls()
             if cached_calls is None:
                 # No cache yet, fetch from API
+                log_msg = "No cache found, creating initial cache..."
+                if self.foreground_updates:
+                    print(log_msg)
+                logger.debug(log_msg)
+
                 new_calls = self._fetch_all_calls()
                 if new_calls:
                     cache_calls(new_calls)
-                    logger.info("Background thread: Initial cache created")
+                    log_msg = f"Initial cache created with {len(new_calls)} calls"
+                    if self.foreground_updates:
+                        print(log_msg)
+                    logger.info(log_msg)
                     self._notify_update(new_calls)
                 return
 
             # Check if there are new calls
             try:
+                log_msg = "Checking if there are new calls available..."
+                if self.foreground_updates:
+                    print(log_msg)
+                logger.debug(log_msg)
+
                 new_calls_available = self._check_for_new_calls()
                 if new_calls_available:
                     # Fetch and cache new calls
+                    log_msg = "New calls available, fetching from API..."
+                    if self.foreground_updates:
+                        print(log_msg)
+                    logger.debug(log_msg)
+
                     new_calls = self._fetch_all_calls()
                     if new_calls:
                         cache_calls(new_calls)
-                        logger.info(
-                            f"Background thread: Updated cache with {len(new_calls)} calls"
-                        )
+                        log_msg = f"Updated cache with {len(new_calls)} calls"
+                        if self.foreground_updates:
+                            print(log_msg)
+                        logger.info(log_msg)
                         self._notify_update(new_calls)
                 else:
-                    logger.debug("Background thread: Cache is already up to date")
+                    log_msg = "Cache is already up to date"
+                    if self.foreground_updates:
+                        print(log_msg)
+                    logger.debug(log_msg)
             except Exception as e:
-                logger.error(f"Background thread: Error checking for new calls: {e}")
+                log_msg = f"Error checking for new calls: {e}"
+                if self.foreground_updates:
+                    print(f"ERROR: {log_msg}")
+                logger.error(log_msg)
 
         except Exception as e:
-            logger.error(f"Background thread: Update error: {e}")
+            log_msg = f"Update error: {e}"
+            if self.foreground_updates:
+                print(f"ERROR: {log_msg}")
+            logger.error(log_msg)
         finally:
             self.updating = False
             self.last_update = datetime.now()
+            if self.foreground_updates:
+                print(
+                    f"Cache update completed at {self.last_update.strftime('%H:%M:%S')}"
+                )
 
     def _check_for_new_calls(self) -> bool:
         """Check if there are new calls available in the API."""
@@ -203,13 +261,20 @@ class CacheUpdateManager:
 _cache_manager = CacheUpdateManager()
 
 
-def vapi_calls(skip_api_check: bool = False) -> List[Call]:
+def vapi_calls(
+    skip_api_check: bool = False, foreground_updates: bool = False
+) -> List[Call]:
     """Get all calls, using cache when possible."""
 
     logger.debug("Fetching calls...")
     stats = get_cache_stats()
     logger.debug(f"Current cache stats: {stats}")
     cached_calls = None
+
+    # Set up the global cache manager with foreground_updates if needed
+    global _cache_manager
+    if foreground_updates and not _cache_manager.foreground_updates:
+        _cache_manager = CacheUpdateManager(foreground_updates=foreground_updates)
 
     try:
         # Try to get cached calls first
@@ -220,10 +285,16 @@ def vapi_calls(skip_api_check: bool = False) -> List[Call]:
             # Skip API check if requested (for fast startup) or if in environment variable
             if skip_api_check or os.environ.get("SKIP_API_CHECK"):
                 logger.info("Skipping API check (will update in background)")
-                # Start a background thread to check for updates without blocking UI
-                threading.Thread(
-                    target=lambda: _cache_manager.start_background_update(), daemon=True
-                ).start()
+                # Start an update without blocking UI
+                if foreground_updates:
+                    print("Performing foreground update check...")
+                    _cache_manager.start_background_update()
+                else:
+                    # Start a background thread to check for updates without blocking UI
+                    threading.Thread(
+                        target=lambda: _cache_manager.start_background_update(),
+                        daemon=True,
+                    ).start()
                 return cached_calls
 
             try:
@@ -952,13 +1023,17 @@ class CallBrowserApp(App):
         # Do a first background refresh a few seconds after loading
         self.set_timer(3, self.action_refresh)
 
-    def __init__(self):
+    def __init__(self, foreground_updates=False):
         super().__init__()
         # Create cache manager for background updates
-        self.cache_manager = CacheUpdateManager(self)
+        self.cache_manager = CacheUpdateManager(
+            self, foreground_updates=foreground_updates
+        )
 
         # Initial load - skip API check for fast startup
-        self.calls = vapi_calls(skip_api_check=True)
+        self.calls = vapi_calls(
+            skip_api_check=True, foreground_updates=foreground_updates
+        )
         logger.info(f"Loaded {len(self.calls)} calls")
         self.current_call = None
 
@@ -1002,7 +1077,7 @@ class CallBrowserApp(App):
         if hasattr(self, "cache_status"):
             self.cache_status.set_status("updating...", updating=True)
 
-        # Start a background update
+        # Start an update (background or foreground depending on settings)
         self.cache_manager.start_background_update()
 
     def _setup_refresh_timer(self):
@@ -1199,9 +1274,14 @@ class CallBrowserApp(App):
 
 
 @app.command()
-def browse():
-    """Browse calls in an interactive TUI"""
-    app = CallBrowserApp()
+def browse(foreground_updates: bool = False):
+    """
+    Browse calls in an interactive TUI
+
+    Args:
+        foreground_updates: If True, updates will run in the foreground with visible output
+    """
+    app = CallBrowserApp(foreground_updates=foreground_updates)
     app.run()
 
 
