@@ -72,3 +72,9 @@ Thumbs.db
 temp/
 cache/ 
 .aider*
+
+# New code block
+.specstory/
+
+# Node.js dependencies
+node_modules/
