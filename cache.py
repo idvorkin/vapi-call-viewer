@@ -174,11 +174,15 @@ def get_cache_stats() -> dict:
         "call_count": 0,
         "oldest_call": None,
         "newest_call": None,
-        "size_mb": 0,
+        "size_mb": 0.0, # Ensure float for consistency
+        "status": "not_exists", # Added status field
+        "cache_file": CACHE_DB
     }
 
     if not os.path.exists(CACHE_DB):
-        return stats
+        return stats # Returns stats with exists=False, status="not_exists"
+
+    stats["exists"] = True # File exists, so update this
 
     try:
         conn = sqlite3.connect(CACHE_DB)
@@ -208,17 +212,26 @@ def get_cache_stats() -> dict:
 
         stats.update(
             {
-                "exists": True,
                 "size_bytes": size_bytes,
                 "size_mb": round(size_bytes / (1024 * 1024), 2),
                 "call_count": call_count,
                 "oldest_call": oldest,
                 "newest_call": newest,
+                "status": "ok", # Update status
             }
         )
 
     except sqlite3.Error as e:
         logger.error(f"Error getting cache stats: {e}")
+        # Attempt to get size even if DB operations fail, if file exists
+        if os.path.exists(CACHE_DB):
+            try:
+                stats["size_bytes"] = os.path.getsize(CACHE_DB)
+                stats["size_mb"] = round(stats["size_bytes"] / (1024 * 1024), 2)
+            except OSError:
+                pass # Could not get size
+        stats["status"] = "error_db_operation"
+
 
     return stats
 

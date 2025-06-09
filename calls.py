@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from dateutil import tz
 from typing import List
 import typer
+from typer import Option
 from loguru import logger
 from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Static, Label, Button
@@ -112,20 +113,37 @@ class CacheUpdated(Message):
         super().__init__()
 
 
+def is_network_available(timeout: int = 1) -> bool:
+    """Checks if the network is available by making a HEAD request."""
+    try:
+        response = httpx.head("https://1.1.1.1", timeout=timeout)
+        logger.info(f"Network check successful: Status {response.status_code}")
+        return True
+    except (httpx.NetworkError, httpx.TimeoutException) as e:
+        logger.warning(f"Network check failed: {e}")
+        return False
+    except Exception as e: # Catch any other unexpected errors
+        logger.error(f"Unexpected error during network check: {e}")
+        return False
+
+
 class CacheUpdateManager:
     """Manages background updates of the cache."""
 
-    def __init__(self, app=None, foreground_updates=False):
+    def __init__(self, app=None, foreground_updates=False, offline: bool = False):
         self.app = app
         self.updating = False
         self.thread = None
         self.last_update = None
         self.foreground_updates = foreground_updates
+        self.offline = offline
 
     def start_background_update(self):
         """Start a background thread to check for cache updates."""
-        if self.updating:
-            return False  # Already updating
+        if self.updating or self.offline:
+            if self.offline:
+                logger.info("Offline mode: Skipping cache update.")
+            return False  # Already updating or in offline mode
 
         self.updating = True
 
@@ -143,6 +161,17 @@ class CacheUpdateManager:
 
     def _check_and_update_cache(self):
         """Background thread function to check and update cache."""
+        if self.offline:
+            logger.info("Offline (flag): Skipping cache check and update.")
+            self.updating = False
+            return
+
+        if not is_network_available():
+            logger.warning("Network unavailable: Skipping cache check and update for this cycle.")
+            self.updating = False
+            # self.last_update is set in finally
+            return
+
         try:
             log_msg = "Checking for new calls..."
             if self.foreground_updates:
@@ -152,13 +181,13 @@ class CacheUpdateManager:
             # First get cached calls
             cached_calls = get_cached_calls()
             if cached_calls is None:
-                # No cache yet, fetch from API
+                # No cache yet, fetch from API only if network is available (checked above)
                 log_msg = "No cache found, creating initial cache..."
                 if self.foreground_updates:
                     print(log_msg)
                 logger.debug(log_msg)
 
-                new_calls = self._fetch_all_calls()
+                new_calls = self._fetch_all_calls() # This makes an API call
                 if new_calls:
                     cache_calls(new_calls)
                     log_msg = f"Initial cache created with {len(new_calls)} calls"
@@ -168,7 +197,7 @@ class CacheUpdateManager:
                     self._notify_update(new_calls)
                 return
 
-            # Check if there are new calls
+            # Check if there are new calls (makes an API call)
             try:
                 log_msg = "Checking if there are new calls available..."
                 if self.foreground_updates:
@@ -262,102 +291,113 @@ _cache_manager = CacheUpdateManager()
 
 
 def vapi_calls(
-    skip_api_check: bool = False, foreground_updates: bool = False
+    skip_api_check: bool = False, foreground_updates: bool = False, offline: bool = False
 ) -> List[Call]:
-    """Get all calls, using cache when possible."""
+    """Get all calls, using cache when possible, and handling offline status."""
 
-    logger.debug("Fetching calls...")
+    network_up = is_network_available()
+    effective_offline = offline or not network_up
+
+    logger.debug(
+        f"Fetching calls (user offline: {offline}, network available: {network_up}, effective_offline: {effective_offline})..."
+    )
     stats = get_cache_stats()
     logger.debug(f"Current cache stats: {stats}")
-    cached_calls = None
 
-    # Set up the global cache manager with foreground_updates if needed
+    # Set up the global cache manager with foreground_updates and effective_offline status
+    # Note: The 'offline' param for CacheUpdateManager itself refers to the user flag,
+    # its internal methods will use is_network_available for cycles.
     global _cache_manager
     if foreground_updates and not _cache_manager.foreground_updates:
-        _cache_manager = CacheUpdateManager(foreground_updates=foreground_updates)
+        _cache_manager = CacheUpdateManager(
+            foreground_updates=foreground_updates, offline=offline
+        ) # Pass user-set offline flag
+
+    cached_calls = get_cached_calls() # Try to get cache first
+
+    if effective_offline:
+        if offline and network_up:
+            logger.info("Offline mode (flag): Operating with local data only.")
+        elif not network_up:
+            logger.warning("Network unavailable: Operating with local data only.")
+
+        if cached_calls is not None:
+            logger.info(f"Offline/Network down: Serving {len(cached_calls)} calls from cache.")
+            return cached_calls
+        else:
+            logger.warning("Offline/Network down: No cache available. Returning empty list.")
+            return []
+
+    # === Online Logic ===
+    # If we reach here, effective_offline is False, meaning network is available and user didn't set --offline.
+    logger.debug("Online mode: Proceeding with potential API calls.")
 
     try:
-        # Try to get cached calls first
-        cached_calls = get_cached_calls()  # No max age limit
         if cached_calls is not None:
-            logger.info(f"Found {len(cached_calls)} calls in cache")
+            logger.info(f"Found {len(cached_calls)} calls in cache.")
 
-            # Skip API check if requested (for fast startup) or if in environment variable
             if skip_api_check or os.environ.get("SKIP_API_CHECK"):
-                logger.info("Skipping API check (will update in background)")
-                # Start an update without blocking UI
-                if foreground_updates:
-                    print("Performing foreground update check...")
-                    _cache_manager.start_background_update()
-                else:
-                    # Start a background thread to check for updates without blocking UI
+                logger.info("Skipping API check for new calls (skip_api_check=True). Will update in background if needed.")
+                if not _cache_manager.updating: # Avoid multiple concurrent updates
                     threading.Thread(
                         target=lambda: _cache_manager.start_background_update(),
                         daemon=True,
                     ).start()
                 return cached_calls
 
+            # Check for newer calls against API
             try:
-                # Get the latest call from API to check if we need to update cache
+                logger.debug("Checking for newer calls on API...")
                 headers = {
                     "authorization": f"{os.environ['VAPI_API_KEY']}",
-                    "createdAtGE": (
-                        datetime.now() - timedelta(minutes=10)
-                    ).isoformat(),  # Look back 10 minutes
-                    "limit": "1",  # Only get the latest call
+                    "createdAtGE": (datetime.now() - timedelta(minutes=10)).isoformat(),
+                    "limit": "1",
                 }
-                latest_api_call = httpx.get(
-                    "https://api.vapi.ai/call", headers=headers
-                ).json()
+                latest_api_call_data = httpx.get("https://api.vapi.ai/call", headers=headers).json()
 
-                if latest_api_call:
-                    latest_api_call = parse_call(latest_api_call[0])
-                    latest_cached_call = get_latest_cached_call()
+                if latest_api_call_data:
+                    latest_api_call_obj = parse_call(latest_api_call_data[0])
+                    latest_cached_call_obj = get_latest_cached_call()
 
-                    # If the latest API call is already in our cache, return cached calls
-                    if (
-                        latest_cached_call
-                        and latest_api_call.id == latest_cached_call.id
-                    ):
-                        logger.info("Cache is up to date, using cached calls")
+                    if latest_cached_call_obj and latest_api_call_obj.id == latest_cached_call_obj.id:
+                        logger.info("Cache is up to date. Serving from cache.")
                         return cached_calls
                     else:
-                        logger.info("Found new calls, refreshing cache")
+                        logger.info("Newer calls detected on API. Refreshing entire cache.")
+                else:
+                    logger.info("No calls found on API in the recent check window. Cache assumed up to date.")
+                    return cached_calls
             except Exception as e:
-                logger.warning(
-                    f"Error checking for new calls: {e}. Using cached calls as fallback."
-                )
+                logger.warning(f"Error checking for new calls: {e}. Serving from cache as fallback.")
                 return cached_calls
 
-        logger.info("Cache miss or new calls available, fetching from API")
-        # If no valid cache or new calls exist, fetch all calls from API
+        # If cached_calls is None or newer calls were detected, fetch all from API
+        logger.info("Fetching all calls from API...")
         headers = {
             "authorization": f"{os.environ['VAPI_API_KEY']}",
-            "createdAtGE": (
-                datetime.now() - timedelta(days=365)
-            ).isoformat(),  # Get calls from last year
-            "limit": "1000",  # Get up to 1000 calls
+            "createdAtGE": (datetime.now() - timedelta(days=365)).isoformat(),
+            "limit": "1000",
         }
         response = httpx.get("https://api.vapi.ai/call", headers=headers)
-        response.raise_for_status()  # Raise exception for bad status codes
+        response.raise_for_status()
         calls_data = response.json()
 
         calls = [parse_call(c) for c in calls_data]
-        logger.info(f"Fetched {len(calls)} calls from API")
+        logger.info(f"Fetched {len(calls)} calls from API.")
 
-        # Cache the results
         cache_calls(calls)
-        logger.info("Calls cached successfully")
-
+        logger.info("Calls cached successfully.")
         return calls
 
     except Exception as e:
-        logger.error(f"Error fetching calls: {e}")
-        # If we have cached calls and hit an error, use them as fallback
+        logger.error(f"Error during API operations: {e}")
         if cached_calls is not None:
-            logger.warning("Using cached calls as fallback due to error")
+            logger.warning("Serving from cache due to API error.")
             return cached_calls
-        raise  # Re-raise the exception if we have no fallback
+        # If effective_offline was somehow false but we hit an error and have no cache
+        # This implies network was initially up, but failed mid-operation.
+        logger.error("API error and no cache available. Returning empty list.")
+        return []
 
 
 class SortScreen(ModalScreen):
@@ -869,9 +909,19 @@ class CacheStatusWidget(Static):
         self.styles.min_width = "30"
         self.markup = True
 
-    def set_status(self, status="up to date", updating=False):
+    def set_status(
+        self,
+        status_text: str = "up to date",
+        updating: bool = False,
+        user_offline: bool = False,
+        network_down: bool = False,
+    ):
         """Update the cache status display."""
-        if updating:
+        if user_offline:
+            self.update("[orange3]Status: Offline (user set)[/orange3]")
+        elif network_down:
+            self.update("[red]Status: Offline (network down)[/red]")
+        elif updating:
             self.update("[yellow]Cache: updating...[/yellow]")
         else:
             time_str = (
@@ -880,9 +930,11 @@ class CacheStatusWidget(Static):
                 else self.last_update.strftime("%H:%M:%S")
             )
             self.update(
-                f"[green]Cache: {status}[/green] ([blue]updated: {time_str}[/blue])"
+                f"[green]Cache: {status_text}[/green] ([blue]updated: {time_str}[/blue])"
             )
-            self.last_update = datetime.now()
+            # Only update last_update time if it's a genuine cache status update, not an offline message
+            if not user_offline and not network_down and not updating:
+                 self.last_update = datetime.now()
 
 
 class CallBrowserApp(App):
@@ -1005,6 +1057,7 @@ class CallBrowserApp(App):
     def on_mount(self) -> None:
         """Called when app is mounted"""
         logger.info(f"App mounted, bindings: {self.BINDINGS}")
+        self.network_available = is_network_available() # Initial network check
 
         # Select first row on load if there are any calls
         if self.calls and len(self.calls) > 0:
@@ -1015,7 +1068,11 @@ class CallBrowserApp(App):
             self.set_focus(self.call_table)
 
         # Set up cache status
-        self.cache_status.set_status(f"loaded ({len(self.calls)} calls)")
+        self.cache_status.set_status(
+            user_offline=self.offline,
+            network_down=not self.network_available,
+            status_text=f"loaded ({len(self.calls)} calls)"
+        )
 
         # Set up refresh timer for periodic background updates
         self._setup_refresh_timer()
@@ -1023,16 +1080,18 @@ class CallBrowserApp(App):
         # Do a first background refresh a few seconds after loading
         self.set_timer(3, self.action_refresh)
 
-    def __init__(self, foreground_updates=False):
+    def __init__(self, foreground_updates=False, offline: bool = False):
         super().__init__()
+        self.offline = offline # User-set offline flag
+        self.network_available = True # Initial assumption, will be checked in on_mount & refresh
         # Create cache manager for background updates
         self.cache_manager = CacheUpdateManager(
-            self, foreground_updates=foreground_updates
+            self, foreground_updates=foreground_updates, offline=self.offline
         )
 
         # Initial load - skip API check for fast startup
         self.calls = vapi_calls(
-            skip_api_check=True, foreground_updates=foreground_updates
+            skip_api_check=True, foreground_updates=foreground_updates, offline=self.offline
         )
         logger.info(f"Loaded {len(self.calls)} calls")
         self.current_call = None
@@ -1070,14 +1129,26 @@ class CallBrowserApp(App):
 
         # Update the cache status
         if hasattr(self, "cache_status"):
-            self.cache_status.set_status(f"updated ({len(self.calls)} calls)")
+            self.network_available = is_network_available() # Re-check network
+            self.cache_status.set_status(
+                user_offline=self.offline,
+                network_down=not self.network_available,
+                status_text=f"updated ({len(self.calls)} calls)"
+            )
 
     def action_refresh(self):
         """Manually refresh calls data."""
+        self.network_available = is_network_available() # Check network before refresh
+
         if hasattr(self, "cache_status"):
-            self.cache_status.set_status("updating...", updating=True)
+            self.cache_status.set_status(
+                updating=not (self.offline or not self.network_available), # Only show "updating" if actually trying
+                user_offline=self.offline,
+                network_down=not self.network_available
+            )
 
         # Start an update (background or foreground depending on settings)
+        # CacheUpdateManager will internally respect self.offline and network status
         self.cache_manager.start_background_update()
 
     def _setup_refresh_timer(self):
@@ -1274,14 +1345,18 @@ class CallBrowserApp(App):
 
 
 @app.command()
-def browse(foreground_updates: bool = False):
+def browse(
+    foreground_updates: bool = False,
+    offline: bool = Option(False, "--offline", help="Run in offline mode, relying only on cached data.")
+):
     """
     Browse calls in an interactive TUI
 
     Args:
         foreground_updates: If True, updates will run in the foreground with visible output
+        offline: If True, run in offline mode, relying only on cached data.
     """
-    app = CallBrowserApp(foreground_updates=foreground_updates)
+    app = CallBrowserApp(foreground_updates=foreground_updates, offline=offline)
     app.run()
 
 
