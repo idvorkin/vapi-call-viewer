@@ -70,7 +70,7 @@ Thumbs.db
 
 # Project specific
 temp/
-cache/ 
+cache/
 .aider*
 
 # New code block
@@ -78,3 +78,4 @@ cache/
 
 # Node.js dependencies
 node_modules/
+zz-chop-conventions/
