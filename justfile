@@ -1,10 +1,25 @@
 install:
-    uv venv
-    . .venv/bin/activate
-    uv pip install --editable .
+    uv sync
 
-global-install: install
+global-install:
     uv tool install --force --editable .
 
 test:
-    pytest -n auto
+    uv run pytest -n auto
+
+dev:
+    uv sync --dev
+
+lock:
+    uv lock
+
+clean:
+    rm -rf .venv
+    rm -f uv.lock
+
+format:
+    uv run ruff format .
+    uv run ruff check --fix .
+
+lint:
+    uv run ruff check .
